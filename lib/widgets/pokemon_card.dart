@@ -1,20 +1,19 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../models/pokemon.dart';
 
-/// Card แสดง Pokémon พร้อม staggered animation
-/// รับ Animation<double> จาก parent เพื่อควบคุม slide-in + fade-in
 class PokemonCard extends StatefulWidget {
   final Pokemon pokemon;
-  final Animation<double> animation;
   final VoidCallback onTap;
+  final Animation<double> animation;
 
   const PokemonCard({
     super.key,
     required this.pokemon,
-    required this.animation,
     required this.onTap,
+    required this.animation,
   });
 
   @override
@@ -23,211 +22,165 @@ class PokemonCard extends StatefulWidget {
 
 class _PokemonCardState extends State<PokemonCard>
     with TickerProviderStateMixin {
-  bool _isHovering = false;
-  late AnimationController _rotationController;
+  // ================= UI State =================
+  bool _hover = false;
+  Offset _dragOffset = Offset.zero;
+
+  // ================= Controllers =================
+  late final AnimationController _floatController;
+  late final AnimationController _rotateController;
+
+  // physics (ต้อง unbounded)
+  late final AnimationController _springX;
+  late final AnimationController _springY;
+
+  // ================= Physics Config =================
+  static const SpringDescription _jellySpring = SpringDescription(
+    mass: 0.8,
+    stiffness: 200,
+    damping: 12,
+  );
 
   @override
   void initState() {
     super.initState();
-    _rotationController = AnimationController(
-      duration: const Duration(milliseconds: 1200),
+
+    _floatController = AnimationController(
       vsync: this,
+      duration: const Duration(seconds: 2),
+    )..repeat(reverse: true);
+
+    _rotateController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 3),
     );
+
+    _springX = AnimationController.unbounded(vsync: this);
+    _springY = AnimationController.unbounded(vsync: this);
   }
 
   @override
   void dispose() {
-    _rotationController.dispose();
+    _floatController.dispose();
+    _rotateController.dispose();
+    _springX.dispose();
+    _springY.dispose();
     super.dispose();
+  }
+
+  // ================= Gesture =================
+  void _onDragUpdate(DragUpdateDetails d) {
+    setState(() {
+      _dragOffset += d.delta;
+    });
+  }
+
+  void _onDragEnd(DragEndDetails d) {
+    final v = d.velocity.pixelsPerSecond;
+
+    _springX.animateWith(
+      SpringSimulation(_jellySpring, _dragOffset.dx, 0, v.dx),
+    );
+
+    _springY.animateWith(
+      SpringSimulation(_jellySpring, _dragOffset.dy, 0, v.dy),
+    );
+
+    _dragOffset = Offset.zero;
   }
 
   @override
   Widget build(BuildContext context) {
+    final primary = Pokemon.typeColor(widget.pokemon.types.first);
+
     return AnimatedBuilder(
       animation: widget.animation,
       builder: (context, child) {
         return Transform.translate(
-          offset: Offset(0, 50 * (1 - widget.animation.value)),
+          offset: Offset(0, 40 * (1 - widget.animation.value)),
           child: Opacity(opacity: widget.animation.value, child: child),
         );
       },
       child: MouseRegion(
         onEnter: (_) {
-          setState(() => _isHovering = true);
-          _rotationController.repeat();
+          setState(() => _hover = true);
+          _rotateController.repeat();
         },
         onExit: (_) {
-          setState(() => _isHovering = false);
-          _rotationController.stop();
+          setState(() => _hover = false);
+          _rotateController.stop();
         },
-        child: TweenAnimationBuilder<Offset>(
-          tween: Tween(
-            begin: Offset.zero,
-            end: _isHovering ? const Offset(0, -5) : Offset.zero,
-          ),
-          duration: const Duration(milliseconds: 200),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
           curve: Curves.easeOutCubic,
-          builder: (context, offset, child) {
-            return Transform.translate(offset: offset, child: child);
-          },
-          child: TweenAnimationBuilder<double>(
-            tween: Tween(begin: 1.0, end: _isHovering ? 1.08 : 1.0),
-            duration: const Duration(milliseconds: 200),
-            curve: Curves.easeOutCubic,
-            builder: (context, scale, child) {
-              return Transform.scale(scale: scale, child: child);
-            },
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
-              decoration: BoxDecoration(
-                boxShadow: _isHovering
-                    ? [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.2),
-                          blurRadius: 16,
-                          offset: const Offset(0, 8),
-                        ),
-                      ]
-                    : [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.1),
-                          blurRadius: 8,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
-                borderRadius: BorderRadius.circular(16),
+          transform: _hover
+              ? (Matrix4.identity()
+                  ..translate(0.0, -6.0)
+                  ..scale(1.06))
+              : Matrix4.identity(),
+          decoration: BoxDecoration(
+            color: primary.withOpacity(_hover ? 0.25 : 0.15),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                blurRadius: _hover ? 16 : 8,
+                offset: Offset(0, _hover ? 8 : 4),
+                color: Colors.black.withOpacity(0.2),
               ),
-              child: _buildCard(context),
-            ),
+            ],
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCard(BuildContext context) {
-    final primaryColor = Pokemon.typeColor(widget.pokemon.types.first);
-
-    return GestureDetector(
-      onTap: widget.onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
-        decoration: BoxDecoration(
-          color: _isHovering
-              ? primaryColor.withOpacity(0.25)
-              : primaryColor.withOpacity(0.15),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: _isHovering
-                ? primaryColor.withOpacity(0.6)
-                : primaryColor.withOpacity(0.3),
-          ),
-        ),
-        child: Stack(
-          children: [
-            // Background Pokéball watermark
-            Positioned(
-              bottom: -15,
-              right: -15,
-              child: Icon(
-                Icons.catching_pokemon,
-                size: 80,
-                color: primaryColor.withOpacity(0.08),
-              ),
-            ),
-            // Content
-            Padding(
+          child: GestureDetector(
+            onTap: widget.onTap,
+            onPanUpdate: _onDragUpdate,
+            onPanEnd: _onDragEnd,
+            child: Padding(
               padding: const EdgeInsets.all(12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // ID
+                  // ===== Header =====
                   Text(
                     '#${widget.pokemon.id.toString().padLeft(3, '0')}',
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.bold,
-                      color: primaryColor.withOpacity(0.6),
+                      color: primary.withOpacity(0.6),
                     ),
                   ),
-                  // Name
                   Text(
-                    widget.pokemon.name[0].toUpperCase() +
-                        widget.pokemon.name.substring(1),
+                    widget.pokemon.name,
                     style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                   ),
-                  const SizedBox(height: 4),
-                  // Type badges
-                  Wrap(
-                    spacing: 4,
-                    children: widget.pokemon.types.map((type) {
-                      return Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Pokemon.typeColor(type),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          type,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      );
-                    }).toList(),
-                  ),
+
                   const Spacer(),
-                  // Hero image with square path animation
+
+                  // ===== Pokémon Image =====
                   Center(
                     child: AnimatedBuilder(
-                      animation: _rotationController,
+                      animation: Listenable.merge([
+                        _floatController,
+                        _rotateController,
+                        _springX,
+                        _springY,
+                      ]),
                       builder: (context, child) {
-                        // Square path: Left → Up → Right → Down → Left → repeat
-                        double offsetX = 0;
-                        double offsetY = 0;
-
-                        if (!_isHovering) {
-                          offsetX = 0;
-                          offsetY = 0;
-                        } else {
-                          final progress = _rotationController.value;
-
-                          if (progress < 0.2) {
-                            // Move left
-                            offsetX = -8 * (progress / 0.2);
-                            offsetY = 0;
-                          } else if (progress < 0.4) {
-                            // Move up
-                            offsetX = -8;
-                            offsetY = -8 * ((progress - 0.2) / 0.2);
-                          } else if (progress < 0.6) {
-                            // Move right
-                            offsetX = -8 + 16 * ((progress - 0.4) / 0.2);
-                            offsetY = -8;
-                          } else if (progress < 0.8) {
-                            // Move down
-                            offsetX = 8;
-                            offsetY = -8 + 8 * ((progress - 0.6) / 0.2);
-                          } else {
-                            // Move left again
-                            offsetX = 8 - 8 * ((progress - 0.8) / 0.2);
-                            offsetY = 0;
-                          }
-                        }
+                        final floatY = -6 * sin(_floatController.value * pi);
 
                         return Transform.translate(
-                          offset: Offset(offsetX, offsetY),
-                          child: child,
+                          offset: Offset(
+                            _dragOffset.dx + _springX.value,
+                            _dragOffset.dy + _springY.value + floatY,
+                          ),
+                          child: Transform(
+                            alignment: Alignment.center,
+                            transform: Matrix4.identity()
+                              ..setEntry(3, 2, 0.001)
+                              ..rotateY(_rotateController.value * 2 * pi),
+                            child: child,
+                          ),
                         );
                       },
                       child: Hero(
@@ -237,21 +190,44 @@ class _PokemonCardState extends State<PokemonCard>
                           height: 90,
                           width: 90,
                           fit: BoxFit.contain,
-                          placeholder: (context, url) => const SizedBox(
-                            width: 40,
-                            height: 40,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                          errorWidget: (context, url, error) =>
-                              const Icon(Icons.catching_pokemon, size: 60),
                         ),
                       ),
                     ),
                   ),
+
+                  const SizedBox(height: 8),
+
+                  // ===== Controls =====
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.play_arrow),
+                        onPressed: () {
+                          _floatController.repeat(reverse: true);
+                          _rotateController.repeat();
+                        },
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.pause),
+                        onPressed: () {
+                          _floatController.stop();
+                          _rotateController.stop();
+                        },
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.stop),
+                        onPressed: () {
+                          _floatController.reset();
+                          _rotateController.reset();
+                        },
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
-          ],
+          ),
         ),
       ),
     );

@@ -1,5 +1,6 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../models/pokemon.dart';
 import '../services/pokemon_service.dart';
@@ -222,6 +223,12 @@ class _PokemonListItemState extends State<_PokemonListItem>
     with TickerProviderStateMixin {
   bool _isHovering = false;
   late AnimationController _wobbleController;
+  late AnimationController _springController;
+  Offset _dragOffset = Offset.zero;
+  Offset _springOffset = Offset.zero;
+  bool _enable3DRotation = false;
+  bool _isAnimationPlaying = false;
+  late AnimationController _rotationController;
 
   @override
   void initState() {
@@ -230,12 +237,64 @@ class _PokemonListItemState extends State<_PokemonListItem>
       duration: const Duration(milliseconds: 800),
       vsync: this,
     );
+    _springController = AnimationController(vsync: this);
+    _rotationController = AnimationController(
+      duration: const Duration(seconds: 2),
+      vsync: this,
+    );
   }
 
   @override
   void dispose() {
     _wobbleController.dispose();
+    _springController.dispose();
+    _rotationController.dispose();
     super.dispose();
+  }
+
+  void _onDragUpdate(DragUpdateDetails details) {
+    setState(() {
+      _dragOffset = Offset(details.globalPosition.dx, 0);
+    });
+  }
+
+  void _onDragEnd(DragEndDetails details) {
+    final springSimulation = SpringSimulation(
+      SpringDescription.withDampingRatio(
+        mass: 1.0,
+        stiffness: 100.0,
+        ratio: 0.6,
+      ),
+      _dragOffset.dx,
+      0,
+      details.velocity.pixelsPerSecond.dx / 1000,
+    );
+    _springController.animateWith(springSimulation).then((_) {
+      setState(() {
+        _dragOffset = Offset.zero;
+        _springOffset = Offset.zero;
+      });
+    });
+  }
+
+  void _toggleAnimation() {
+    if (_isAnimationPlaying) {
+      _rotationController.stop();
+      setState(() => _isAnimationPlaying = false);
+    } else {
+      _rotationController.repeat();
+      setState(() => _isAnimationPlaying = true);
+    }
+  }
+
+  void _pauseAnimation() {
+    _rotationController.stop();
+    setState(() => _isAnimationPlaying = false);
+  }
+
+  void _stopAnimation() {
+    _rotationController.reset();
+    setState(() => _isAnimationPlaying = false);
   }
 
   @override
@@ -286,42 +345,144 @@ class _PokemonListItemState extends State<_PokemonListItem>
             color: _isHovering ? Colors.grey.shade100 : Colors.white,
             child: ListTile(
               onTap: widget.onTap,
-              leading: AnimatedBuilder(
-                animation: _wobbleController,
-                builder: (context, child) {
-                  if (!_isHovering) {
-                    return child!;
-                  }
-                  // Wobble animation: เดินซ้ายขวา loop ไปเรื่อยๆ
-                  final wobble = (_wobbleController.value * pi * 2);
-                  final offsetX = 8 * cos(wobble);
-                  final offsetY =
-                      -2 * (sin(_wobbleController.value * pi).abs());
-                  final scale =
-                      1.0 + (sin(_wobbleController.value * pi).abs()) * 0.15;
+              leading: GestureDetector(
+                onHorizontalDragUpdate: _onDragUpdate,
+                onHorizontalDragEnd: _onDragEnd,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.grab,
+                  child: AnimatedBuilder(
+                    animation: Listenable.merge([
+                      _wobbleController,
+                      _springController,
+                      _rotationController,
+                    ]),
+                    builder: (context, child) {
+                      // Drag spring animation
+                      _springOffset = Offset(
+                        _springController.value * (_dragOffset.dx - 0),
+                        0,
+                      );
 
-                  return Transform(
-                    alignment: Alignment.center,
-                    transform: Matrix4.identity()
-                      ..translate(offsetX, offsetY)
-                      ..scale(scale),
-                    child: child,
-                  );
-                },
-                child: Hero(
-                  tag: 'pokemon-${widget.pokemon.id}',
-                  child: CachedNetworkImage(
-                    imageUrl: widget.pokemon.imageUrl,
-                    width: 50,
-                    height: 50,
-                    placeholder: (_, __) => const SizedBox(
-                      width: 30,
-                      height: 30,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      if (!_isHovering) {
+                        return child!;
+                      }
+
+                      // Wobble animation: เดินซ้ายขวา loop ไปเรื่อยๆ
+                      final wobble = (_wobbleController.value * pi * 2);
+                      final offsetX = 8 * cos(wobble);
+                      final offsetY =
+                          -2 * (sin(_wobbleController.value * pi).abs());
+                      final scale =
+                          1.0 + (sin(_wobbleController.value * pi).abs()) * 0.15;
+
+                      // 3D Rotation
+                      final rotationValue = _enable3DRotation
+                          ? _rotationController.value
+                          : 0.0;
+
+                      return Transform(
+                        alignment: Alignment.center,
+                        transform: Matrix4.identity()
+                          ..translate(
+                            offsetX + _dragOffset.dx + _springOffset.dx,
+                            offsetY,
+                          )
+                          ..scale(scale)
+                          ..setEntry(3, 2, 0.001)
+                          ..rotateY(rotationValue * pi * 2),
+                        child: child,
+                      );
+                    },
+                    child: Hero(
+                      tag: 'pokemon-${widget.pokemon.id}',
+                      child: CachedNetworkImage(
+                        imageUrl: widget.pokemon.imageUrl,
+                        width: 50,
+                        height: 50,
+                        placeholder: (_, __) => const SizedBox(
+                          width: 30,
+                          height: 30,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        errorWidget: (_, __, ___) =>
+                            const Icon(Icons.catching_pokemon, size: 40),
+                      ),
                     ),
-                    errorWidget: (_, __, ___) =>
-                        const Icon(Icons.catching_pokemon, size: 40),
                   ),
+                ),
+              ),
+              trailing: PopupMenuButton<String>(
+                onSelected: (value) {
+                  if (value == 'play') _toggleAnimation();
+                  if (value == 'pause') _pauseAnimation();
+                  if (value == 'stop') _stopAnimation();
+                  if (value == '3d') {
+                    setState(() => _enable3DRotation = !_enable3DRotation);
+                    if (_enable3DRotation && !_isAnimationPlaying) {
+                      _toggleAnimation();
+                    }
+                  }
+                },
+                itemBuilder: (BuildContext context) => [
+                  PopupMenuItem(
+                    value: 'play',
+                    child: Row(
+                      children: [
+                        Icon(
+                          _isAnimationPlaying
+                              ? Icons.play_arrow
+                              : Icons.play_circle_outline,
+                        ),
+                        const SizedBox(width: 8),
+                        const Text('Play'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'pause',
+                    child: Row(
+                      children: [
+                        Icon(
+                          _isAnimationPlaying
+                              ? Icons.pause_circle_outline
+                              : Icons.pause,
+                        ),
+                        const SizedBox(width: 8),
+                        const Text('Pause'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'stop',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.stop_circle_outlined),
+                        const SizedBox(width: 8),
+                        const Text('Stop'),
+                      ],
+                    ),
+                  ),
+                  const PopupMenuDivider(),
+                  PopupMenuItem(
+                    value: '3d',
+                    child: Row(
+                      children: [
+                        Icon(
+                          _enable3DRotation
+                              ? Icons.threed_rotation
+                              : Icons.three_k,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _enable3DRotation ? 'Disable 3D' : 'Enable 3D',
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                child: Icon(
+                  Icons.more_vert,
+                  color: _enable3DRotation ? Colors.blue : Colors.grey,
                 ),
               ),
               title: Text(
@@ -329,27 +490,36 @@ class _PokemonListItemState extends State<_PokemonListItem>
                     widget.pokemon.name.substring(1),
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
-              subtitle: Text(
-                '#${widget.pokemon.id.toString().padLeft(3, '0')}',
-              ),
-              trailing: Wrap(
-                spacing: 4,
-                children: widget.pokemon.types.map((type) {
-                  return Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Pokemon.typeColor(type),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      type,
-                      style: const TextStyle(color: Colors.white, fontSize: 11),
-                    ),
-                  );
-                }).toList(),
+              subtitle: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    '#${widget.pokemon.id.toString().padLeft(3, '0')}',
+                  ),
+                  const SizedBox(width: 12),
+                  Wrap(
+                    spacing: 4,
+                    children: widget.pokemon.types.map((type) {
+                      return Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Pokemon.typeColor(type),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          type,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ],
               ),
             ),
           ),
